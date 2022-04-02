@@ -170,10 +170,39 @@ where
         &mut self,
         change: automerge_protocol::Change,
     ) -> Result<Patch, Error<P::Error, B::Error>> {
-        self.with_insert_changes(|s| {
-            let (patch, _) = s.backend.apply_local_change(change)?;
-            Ok(patch)
-        })
+        let (patch, change) = self
+            .backend
+            .apply_local_change(change)
+            .map_err(Error::BackendError)?;
+        self.persister
+            .insert_changes(vec![(
+                change.actor_id().clone(),
+                change.seq,
+                change.raw_bytes().to_vec(),
+            )])
+            .map_err(Error::PersisterError)?;
+
+        Ok(patch)
+    }
+
+    /// Apply a local change and return it mutably, typically from a local frontend.
+    pub fn apply_local_change_mut(
+        &mut self,
+        change: automerge_protocol::Change,
+    ) -> Result<(Patch, &mut Change), Error<P::Error, B::Error>> {
+        let (patch, change) = self
+            .backend
+            .apply_local_change_mut(change)
+            .map_err(Error::BackendError)?;
+        self.persister
+            .insert_changes(vec![(
+                change.actor_id().clone(),
+                change.seq,
+                change.raw_bytes().to_vec(),
+            )])
+            .map_err(Error::PersisterError)?;
+
+        Ok((patch, change))
     }
 
     /// Compact the storage.
