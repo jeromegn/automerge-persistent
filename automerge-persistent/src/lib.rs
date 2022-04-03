@@ -30,7 +30,7 @@ use std::{collections::HashMap, fmt::Debug};
 
 use automerge::{
     sync,
-    transaction::{self, Transaction},
+    transaction::{self, CommitOptions, Transaction},
     Automerge, AutomergeError, Change,
 };
 pub use mem::MemoryPersister;
@@ -95,6 +95,44 @@ where
                 )])
                 .expect("Failed to save change from transaction");
         }
+        Ok(result)
+    }
+
+    pub fn transact_with<C, F: FnOnce(&mut Transaction) -> Result<O, E>, O, E>(
+        &mut self,
+        c: C,
+        f: F,
+    ) -> transaction::Result<O, E>
+    where
+        C: FnOnce(&O) -> CommitOptions,
+    {
+        let result = self.document.transact_with(c, f)?;
+        if let Some(change) = self.document.get_last_local_change() {
+            // TODO: remove this unwrap and return the error
+            self.persister
+                .insert_changes(vec![(
+                    change.actor_id().clone(),
+                    change.seq,
+                    change.raw_bytes().to_vec(),
+                )])
+                .expect("Failed to save change from transaction");
+        }
+        Ok(result)
+    }
+
+    pub fn apply_changes(
+        &mut self,
+        changes: impl IntoIterator<Item = Change> + Clone,
+    ) -> Result<(), Error<P::Error>> {
+        let result = self.document.apply_changes(changes.clone())?;
+        self.persister
+            .insert_changes(
+                changes
+                    .into_iter()
+                    .map(|c| (c.actor_id().clone(), c.seq, c.raw_bytes().to_vec()))
+                    .collect(),
+            )
+            .map_err(Error::PersisterError)?;
         Ok(result)
     }
 
@@ -272,10 +310,6 @@ where
     /// Obtain a reference to the persister.
     pub fn persister(&self) -> &P {
         &self.persister
-    }
-
-    pub fn persister_mut(&mut self) -> &mut P {
-        &mut self.persister
     }
 
     /// Reset the sync state for a peer.
