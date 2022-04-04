@@ -80,10 +80,10 @@ where
         &mut self.document
     }
 
-    pub fn transact<F: FnOnce(&mut Transaction) -> Result<O, E>, O, E>(
-        &mut self,
-        f: F,
-    ) -> transaction::Result<O, E> {
+    pub fn transact<F, O, E>(&mut self, f: F) -> transaction::Result<O, E>
+    where
+        F: FnOnce(&mut Transaction) -> Result<O, E>,
+    {
         let result = self.document.transact(f)?;
         if let Some(change) = self.document.get_last_local_change() {
             // TODO: remove this unwrap and return the error
@@ -98,12 +98,9 @@ where
         Ok(result)
     }
 
-    pub fn transact_with<C, F: FnOnce(&mut Transaction) -> Result<O, E>, O, E>(
-        &mut self,
-        c: C,
-        f: F,
-    ) -> transaction::Result<O, E>
+    pub fn transact_with<F, O, E, C>(&mut self, c: C, f: F) -> transaction::Result<O, E>
     where
+        F: FnOnce(&mut Transaction) -> Result<O, E>,
         C: FnOnce(&O) -> CommitOptions,
     {
         let result = self.document.transact_with(c, f)?;
