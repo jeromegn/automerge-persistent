@@ -30,7 +30,7 @@ use std::{collections::HashMap, fmt::Debug};
 
 use automerge::{
     sync,
-    transaction::{self, CommitOptions, Transaction},
+    transaction::{self, CommitOptions, Failure, Success, Transaction},
     Automerge, AutomergeError, Change,
 };
 pub use mem::MemoryPersister;
@@ -55,8 +55,20 @@ pub enum Error<E> {
     AutomergeError(#[from] AutomergeError),
     /// A persister error.
     #[error(transparent)]
-    PersisterError(E),
+    Persister(E),
 }
+
+/// Errors that persistent backends can return after a transaction.
+#[derive(Debug, thiserror::Error)]
+pub enum TransactionError<PE, E> {
+    /// A persister error.
+    #[error(transparent)]
+    Persister(PE),
+    #[error(transparent)]
+    Transaction(#[from] Failure<E>),
+}
+
+type TransactionResult<O, E, PE> = Result<Success<O>, TransactionError<PE, E>>;
 
 type PeerId = Vec<u8>;
 
@@ -80,56 +92,58 @@ where
         &mut self.document
     }
 
-    pub fn transact<F, O, E>(&mut self, f: F) -> transaction::Result<O, E>
+    pub fn transact<F, O, E>(&mut self, f: F) -> TransactionResult<O, E, P::Error>
     where
         F: FnOnce(&mut Transaction) -> Result<O, E>,
     {
         let result = self.document.transact(f)?;
-        if let Some(change) = self.document.get_last_local_change() {
-            // TODO: remove this unwrap and return the error
-            self.persister
-                .insert_changes(vec![(
-                    change.actor_id().clone(),
-                    change.seq,
-                    change.raw_bytes().to_vec(),
-                )])
-                .expect("Failed to save change from transaction");
+        if let Err(e) = self.after_transaction() {
+            return Err(TransactionError::Persister(e));
         }
         Ok(result)
     }
 
-    pub fn transact_with<F, O, E, C>(&mut self, c: C, f: F) -> transaction::Result<O, E>
+    fn after_transaction(&mut self) -> Result<(), P::Error> {
+        if let Some(change) = self.document.get_last_local_change() {
+            self.persister.insert_changes(vec![(
+                change.actor_id().clone(),
+                change.seq,
+                change.raw_bytes().to_vec(),
+            )])?;
+        }
+        Ok(())
+    }
+
+    pub fn transact_with<F, O, E, C>(&mut self, c: C, f: F) -> TransactionResult<O, E, P::Error>
     where
         F: FnOnce(&mut Transaction) -> Result<O, E>,
         C: FnOnce(&O) -> CommitOptions,
     {
         let result = self.document.transact_with(c, f)?;
-        if let Some(change) = self.document.get_last_local_change() {
-            // TODO: remove this unwrap and return the error
-            self.persister
-                .insert_changes(vec![(
-                    change.actor_id().clone(),
-                    change.seq,
-                    change.raw_bytes().to_vec(),
-                )])
-                .expect("Failed to save change from transaction");
+        if let Err(e) = self.after_transaction() {
+            return Err(TransactionError::Persister(e));
         }
         Ok(result)
     }
 
     pub fn apply_changes(
         &mut self,
-        changes: impl IntoIterator<Item = Change> + Clone,
+        changes: impl IntoIterator<Item = Change>,
     ) -> Result<(), Error<P::Error>> {
-        let result = self.document.apply_changes(changes.clone())?;
+        let mut to_persist = vec![];
+        let result = self
+            .document
+            .apply_changes(changes.into_iter().map(|change| {
+                to_persist.push((
+                    change.actor_id().clone(),
+                    change.seq,
+                    change.raw_bytes().to_vec(),
+                ));
+                change
+            }))?;
         self.persister
-            .insert_changes(
-                changes
-                    .into_iter()
-                    .map(|c| (c.actor_id().clone(), c.seq, c.raw_bytes().to_vec()))
-                    .collect(),
-            )
-            .map_err(Error::PersisterError)?;
+            .insert_changes(to_persist)
+            .map_err(Error::Persister)?;
         Ok(result)
     }
 
@@ -143,14 +157,14 @@ where
     /// let backend = PersistentBackend::<_, automerge::Backend>::load(persister).unwrap();
     /// ```
     pub fn load(persister: P) -> Result<Self, Error<P::Error>> {
-        let document = persister.get_document().map_err(Error::PersisterError)?;
+        let document = persister.get_document().map_err(Error::Persister)?;
         let mut backend = if let Some(document) = document {
             Automerge::load(&document).map_err(Error::AutomergeError)?
         } else {
             Automerge::default()
         };
 
-        let change_bytes = persister.get_changes().map_err(Error::PersisterError)?;
+        let change_bytes = persister.get_changes().map_err(Error::Persister)?;
 
         let mut changes = Vec::new();
         for change_bytes in change_bytes {
@@ -189,13 +203,13 @@ where
         let changes = self.document.get_changes(&[]);
         self.persister
             .set_document(saved_backend)
-            .map_err(Error::PersisterError)?;
+            .map_err(Error::Persister)?;
         self.persister
             .remove_changes(changes.into_iter().map(|c| (c.actor_id(), c.seq)).collect())
-            .map_err(Error::PersisterError)?;
+            .map_err(Error::Persister)?;
         self.persister
             .remove_sync_states(old_peer_ids)
-            .map_err(Error::PersisterError)?;
+            .map_err(Error::Persister)?;
         Ok(())
     }
 
@@ -222,7 +236,7 @@ where
             if let Some(sync_state) = self
                 .persister
                 .get_sync_state(&peer_id)
-                .map_err(Error::PersisterError)?
+                .map_err(Error::Persister)?
             {
                 let s = sync::State::decode(&sync_state)
                     .map_err(|e| Error::AutomergeError(e.into()))?;
@@ -233,7 +247,7 @@ where
         let message = self.document.generate_sync_message(sync_state);
         self.persister
             .set_sync_state(peer_id, sync_state.encode())
-            .map_err(Error::PersisterError)?;
+            .map_err(Error::Persister)?;
         Ok(message)
     }
 
@@ -253,7 +267,7 @@ where
             if let Some(sync_state) = self
                 .persister
                 .get_sync_state(&peer_id)
-                .map_err(Error::PersisterError)?
+                .map_err(Error::Persister)?
             {
                 let s = sync::State::decode(&sync_state)
                     .map_err(|e| Error::AutomergeError(e.into()))?;
@@ -275,11 +289,11 @@ where
                     .map(|c| (c.actor_id().clone(), c.seq, c.raw_bytes().to_vec()))
                     .collect(),
             )
-            .map_err(Error::PersisterError)?;
+            .map_err(Error::Persister)?;
 
         self.persister
             .set_sync_state(peer_id, sync_state.encode())
-            .map_err(Error::PersisterError)?;
+            .map_err(Error::Persister)?;
         Ok(patch)
     }
 
