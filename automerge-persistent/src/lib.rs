@@ -64,6 +64,7 @@ pub enum TransactionError<PE, E> {
     /// A persister error.
     #[error(transparent)]
     Persister(PE),
+    /// A transaction error
     #[error(transparent)]
     Transaction(#[from] Failure<E>),
 }
