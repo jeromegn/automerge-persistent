@@ -69,7 +69,7 @@ pub enum TransactionError<PE, E> {
     Transaction(#[from] Failure<E>),
 }
 
-type TransactionResult<O, E, PE> = Result<Success<O>, TransactionError<PE, E>>;
+pub type TransactionResult<O, E, PE> = Result<Success<O>, TransactionError<PE, E>>;
 
 type PeerId = Vec<u8>;
 
