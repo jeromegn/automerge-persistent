@@ -31,7 +31,7 @@ use std::{collections::HashMap, fmt::Debug};
 use automerge::{
     sync,
     transaction::{self, CommitOptions, Failure, Success, Transaction},
-    Automerge, AutomergeError, Change,
+    Automerge, AutomergeError, Change, OpObserver,
 };
 pub use mem::MemoryPersister;
 pub use persister::Persister;
@@ -127,21 +127,23 @@ where
         Ok(result)
     }
 
-    pub fn apply_changes(
+    pub fn apply_changes<Obs: OpObserver>(
         &mut self,
         changes: impl IntoIterator<Item = Change>,
+        mut observer: Option<&mut Obs>,
     ) -> Result<(), Error<P::Error>> {
         let mut to_persist = vec![];
-        let result = self
-            .document
-            .apply_changes(changes.into_iter().map(|change| {
+        let result = self.document.apply_changes(
+            changes.into_iter().map(|change| {
                 to_persist.push((
                     change.actor_id().clone(),
                     change.seq,
                     change.raw_bytes().to_vec(),
                 ));
                 change
-            }))?;
+            }),
+            observer,
+        )?;
         self.persister
             .insert_changes(to_persist)
             .map_err(Error::Persister)?;
@@ -157,10 +159,21 @@ where
     /// let persister = MemoryPersister::default();
     /// let backend = PersistentBackend::<_, automerge::Backend>::load(persister).unwrap();
     /// ```
-    pub fn load(persister: P) -> Result<Self, Error<P::Error>> {
+    pub fn load<Obs: OpObserver>(
+        persister: P,
+        op_observer: &mut Option<&mut Obs>,
+    ) -> Result<Self, Error<P::Error>> {
         let document = persister.get_document().map_err(Error::Persister)?;
+
         let mut backend = if let Some(document) = document {
-            Automerge::load(&document).map_err(Error::AutomergeError)?
+            Automerge::load(
+                &document,
+                match op_observer {
+                    Some(observer) => Some(*observer),
+                    None => None,
+                },
+            )
+            .map_err(Error::AutomergeError)?
         } else {
             Automerge::default()
         };
@@ -175,7 +188,13 @@ where
         }
 
         backend
-            .apply_changes(changes)
+            .apply_changes(
+                changes,
+                match op_observer {
+                    Some(observer) => Some(*observer),
+                    None => None,
+                },
+            )
             .map_err(Error::AutomergeError)?;
         Ok(Self {
             document: backend,
@@ -259,10 +278,11 @@ where
     ///
     /// This internally retrieves the previous sync state from storage and saves the new one
     /// afterwards.
-    pub fn receive_sync_message(
+    pub fn receive_sync_message<Obs: OpObserver>(
         &mut self,
         peer_id: PeerId,
         message: sync::Message,
+        op_observer: Option<&mut Obs>,
     ) -> Result<(), Error<P::Error>> {
         if !self.sync_states.contains_key(&peer_id) {
             if let Some(sync_state) = self
@@ -280,7 +300,7 @@ where
         let heads = self.document.get_heads();
         let patch = self
             .document
-            .receive_sync_message(sync_state, message)
+            .receive_sync_message(sync_state, message, op_observer)
             .map_err(Error::AutomergeError)?;
         let changes = self.document.get_changes(&heads);
         self.persister
