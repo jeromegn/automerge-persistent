@@ -349,6 +349,10 @@ where
     /// This is typically used when a peer disconnects, we need to reset the sync state for them as
     /// they may come back up with different state.
     pub fn reset_sync_state(&mut self, peer_id: &[u8]) {
-        self.sync_states.remove(peer_id);
+        if let Some(_) = self.sync_states.remove(peer_id) {
+            if let Err(e) = self.persister.remove_sync_states(&[peer_id]) {
+                eprintln!("could not remove sync state for peer {:?}: {e}", peer_id);
+            }
+        }
     }
 }
