@@ -115,10 +115,15 @@ where
         Ok(())
     }
 
-    pub fn transact_with<F, O, E, C>(&mut self, c: C, f: F) -> TransactionResult<O, E, P::Error>
+    pub fn transact_with<F, O, E, C, Obs>(
+        &mut self,
+        c: C,
+        f: F,
+    ) -> TransactionResult<O, E, P::Error>
     where
         F: FnOnce(&mut Transaction) -> Result<O, E>,
-        C: FnOnce(&O) -> CommitOptions,
+        Obs: OpObserver,
+        C: FnOnce(&O) -> CommitOptions<Obs>,
     {
         let result = self.document.transact_with(c, f)?;
         if let Err(e) = self.after_transaction() {
