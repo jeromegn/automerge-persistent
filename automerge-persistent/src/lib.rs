@@ -341,6 +341,10 @@ where
         &self.persister
     }
 
+    pub fn persister_mut(&mut self) -> &mut P {
+        &mut self.persister
+    }
+
     /// Reset the sync state for a peer.
     ///
     /// This is typically used when a peer disconnects, we need to reset the sync state for them as
