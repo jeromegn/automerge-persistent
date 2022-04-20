@@ -39,12 +39,16 @@ impl FsPersister {
         fs::create_dir_all(&root_path)?;
 
         let changes_path = root_path.join(CHANGES_DIR);
-        fs::create_dir(&changes_path)?;
+        if fs::metadata(&changes_path).is_err() {
+            fs::create_dir(&changes_path)?;
+        }
 
         let doc_path = root_path.join(DOC_FILE);
 
         let sync_path = root_path.join(SYNC_DIR);
-        fs::create_dir(&sync_path)?;
+        if fs::metadata(&sync_path).is_err() {
+            fs::create_dir(&sync_path)?;
+        }
 
         Ok(Self {
             changes_path,
