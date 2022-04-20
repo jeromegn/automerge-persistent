@@ -17,7 +17,7 @@ pub struct FsPersister {
     changes_path: PathBuf,
     doc_path: PathBuf,
     sync_states_path: PathBuf,
-    cache: Arc<RwLock<FsPersisterCache>>,
+    cache: FsPersisterCache,
     sizes: StoredSizes,
 }
 
@@ -121,6 +121,14 @@ impl FsPersisterCache {
         flushed += self.flush_sync_states_sync(sync_states_path)?;
         Ok(flushed)
     }
+
+    fn drain_clone(&mut self) -> Self {
+        Self {
+            changes: self.changes.drain().collect(),
+            document: self.document.take(),
+            sync_states: self.sync_states.drain().collect(),
+        }
+    }
 }
 
 /// Possible errors from persisting.
@@ -160,11 +168,11 @@ impl FsPersister {
             changes_path,
             doc_path,
             sync_states_path,
-            cache: Arc::new(RwLock::new(FsPersisterCache {
+            cache: FsPersisterCache {
                 changes: HashMap::new(),
                 document: None,
                 sync_states: HashMap::new(),
-            })),
+            },
             sizes: StoredSizes::default(),
         };
 
@@ -181,17 +189,12 @@ impl FsPersister {
         Ok(s)
     }
 
-    pub fn flush_cache(&self) -> impl Future<Output = Result<usize, std::io::Error>> {
-        let cache = Arc::clone(&self.cache);
+    pub fn flush_cache(&mut self) -> impl Future<Output = Result<usize, std::io::Error>> {
         let doc_path = self.doc_path.clone();
         let changes_path = self.changes_path.clone();
         let sync_states_path = self.sync_states_path.clone();
-        async move {
-            cache
-                .write()
-                .flush(doc_path, changes_path, sync_states_path)
-                .await
-        }
+        let mut cache = self.cache.drain_clone();
+        async move { cache.flush(doc_path, changes_path, sync_states_path).await }
     }
 }
 
@@ -229,7 +232,7 @@ impl Persister for FsPersister {
     fn insert_changes(&mut self, changes: Vec<(ActorId, u64, Vec<u8>)>) -> Result<(), Self::Error> {
         for (a, s, c) in changes {
             self.sizes.changes += c.len();
-            if let Some(old) = self.cache.write().changes.insert((a, s), c) {
+            if let Some(old) = self.cache.changes.insert((a, s), c) {
                 self.sizes.changes -= old.len();
             }
         }
@@ -237,9 +240,8 @@ impl Persister for FsPersister {
     }
 
     fn remove_changes(&mut self, changes: Vec<(&ActorId, u64)>) -> Result<(), Self::Error> {
-        let mut cache = self.cache.write();
         for (a, s) in changes {
-            if let Some(old) = cache.changes.remove(&(a.clone(), s)) {
+            if let Some(old) = self.cache.changes.remove(&(a.clone(), s)) {
                 // not flushed yet
                 self.sizes.changes -= old.len();
                 continue;
@@ -257,7 +259,7 @@ impl Persister for FsPersister {
     }
 
     fn get_document(&self) -> Result<Option<Vec<u8>>, Self::Error> {
-        if let Some(ref doc) = self.cache.read().document {
+        if let Some(ref doc) = self.cache.document {
             return Ok(Some(doc.clone()));
         }
         if fs::metadata(&self.doc_path).is_ok() {
@@ -268,12 +270,12 @@ impl Persister for FsPersister {
 
     fn set_document(&mut self, data: Vec<u8>) -> Result<(), Self::Error> {
         self.sizes.document = data.len();
-        self.cache.write().document = Some(data);
+        self.cache.document = Some(data);
         Ok(())
     }
 
     fn get_sync_state(&self, peer_id: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
-        if let Some(sync_state) = self.cache.read().sync_states.get(peer_id) {
+        if let Some(sync_state) = self.cache.sync_states.get(peer_id) {
             return Ok(Some(sync_state.clone()));
         }
         let path = make_peer_path(&self.sync_states_path, peer_id);
@@ -285,16 +287,15 @@ impl Persister for FsPersister {
 
     fn set_sync_state(&mut self, peer_id: Vec<u8>, sync_state: Vec<u8>) -> Result<(), Self::Error> {
         self.sizes.sync_states += sync_state.len();
-        if let Some(old) = self.cache.write().sync_states.insert(peer_id, sync_state) {
+        if let Some(old) = self.cache.sync_states.insert(peer_id, sync_state) {
             self.sizes.sync_states -= old.len();
         }
         Ok(())
     }
 
     fn remove_sync_states(&mut self, peer_ids: &[&[u8]]) -> Result<(), Self::Error> {
-        let mut cache = self.cache.write();
         for peer_id in peer_ids {
-            if let Some(old) = cache.sync_states.remove(*peer_id) {
+            if let Some(old) = self.cache.sync_states.remove(*peer_id) {
                 // not flushed yet
                 self.sizes.sync_states -= old.len();
                 continue;
@@ -337,7 +338,7 @@ impl Persister for FsPersister {
 
     fn flush(&mut self) -> Result<usize, Self::Error> {
         self.cache
-            .write()
+            .drain_clone()
             .flush_sync(
                 self.doc_path.clone(),
                 self.changes_path.clone(),
