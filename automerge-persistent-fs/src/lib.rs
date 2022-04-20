@@ -50,12 +50,24 @@ impl FsPersister {
             fs::create_dir(&sync_path)?;
         }
 
-        Ok(Self {
+        let mut s = Self {
             changes_path,
             doc_path,
             sync_path,
             sizes: StoredSizes::default(),
-        })
+        };
+
+        s.sizes.changes = s.get_changes()?.iter().map(Vec::len).sum();
+        s.sizes.document = s.get_document()?.unwrap_or_default().len();
+        s.sizes.sync_states = s
+            .get_peer_ids()?
+            .iter()
+            .map(|id| s.get_sync_state(id).map(|o| o.unwrap_or_default().len()))
+            .collect::<Result<Vec<usize>, _>>()?
+            .iter()
+            .sum();
+
+        Ok(s)
     }
 
     fn make_changes_path(&self, actor_id: &ActorId, seq: u64) -> PathBuf {
