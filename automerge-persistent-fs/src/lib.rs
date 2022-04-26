@@ -196,6 +196,16 @@ impl FsPersister {
         let mut cache = self.cache.drain_clone();
         async move { cache.flush(doc_path, changes_path, sync_states_path).await }
     }
+
+    pub fn load<R: AsRef<Path>, P: AsRef<Path>>(
+        root: R,
+        prefix: P,
+    ) -> Option<Result<Self, FsPersisterError>> {
+        if !root.as_ref().join(&prefix).exists() {
+            return None;
+        }
+        Some(Self::new(root, prefix))
+    }
 }
 
 fn make_changes_path<P: AsRef<Path>>(changes_path: P, actor_id: &ActorId, seq: u64) -> PathBuf {
