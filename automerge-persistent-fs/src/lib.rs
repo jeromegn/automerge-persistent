@@ -200,11 +200,12 @@ impl FsPersister {
     pub fn load<R: AsRef<Path>, P: AsRef<Path>>(
         root: R,
         prefix: P,
-    ) -> Option<Result<Self, FsPersisterError>> {
+    ) -> Result<Option<Self>, FsPersisterError> {
         if !root.as_ref().join(&prefix).exists() {
-            return None;
+            return Ok(None);
         }
-        Some(Self::new(root, prefix))
+        let doc = Self::new(root, prefix)?;
+        Ok(Some(doc))
     }
 }
 
