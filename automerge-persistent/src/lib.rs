@@ -106,7 +106,7 @@ where
         Ok(result)
     }
 
-    fn after_transaction(&mut self) -> Result<(), P::Error> {
+    pub fn after_transaction(&mut self) -> Result<(), P::Error> {
         if let Some(change) = self.document.get_last_local_change() {
             self.persister.insert_changes(vec![(
                 change.actor_id().clone(),
