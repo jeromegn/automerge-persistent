@@ -13,6 +13,7 @@ use hex::FromHexError;
 
 #[derive(Debug)]
 pub struct FsPersister {
+    root_path: PathBuf,
     changes_path: PathBuf,
     doc_path: PathBuf,
     sync_states_path: PathBuf,
@@ -153,21 +154,14 @@ impl FsPersister {
         prefix: P,
     ) -> Result<Self, FsPersisterError> {
         let root_path = root.as_ref().join(&prefix);
-        fs::create_dir_all(&root_path)?;
-
         let changes_path = root_path.join(CHANGES_DIR);
-        if fs::metadata(&changes_path).is_err() {
-            fs::create_dir(&changes_path)?;
-        }
-
         let doc_path = root_path.join(DOC_FILE);
-
         let sync_states_path = root_path.join(SYNC_DIR);
-        if fs::metadata(&sync_states_path).is_err() {
-            fs::create_dir(&sync_states_path)?;
-        }
+
+        create_dirs(&root_path, &changes_path, &sync_states_path)?;
 
         let mut s = Self {
+            root_path,
             changes_path,
             doc_path,
             sync_states_path,
@@ -194,11 +188,15 @@ impl FsPersister {
 
     #[cfg(feature = "async")]
     pub fn flush_cache(&mut self) -> impl Future<Output = Result<usize, std::io::Error>> {
+        let root_path = self.root_path.clone();
         let doc_path = self.doc_path.clone();
         let changes_path = self.changes_path.clone();
         let sync_states_path = self.sync_states_path.clone();
         let mut cache = self.cache.drain_clone();
-        async move { cache.flush(doc_path, changes_path, sync_states_path).await }
+        async move {
+            create_dirs(&root_path, &changes_path, &sync_states_path)?;
+            cache.flush(doc_path, changes_path, sync_states_path).await
+        }
     }
 
     pub fn load<R: AsRef<Path>, P: AsRef<Path>>(
@@ -352,6 +350,7 @@ impl Persister for FsPersister {
     }
 
     fn flush(&mut self) -> Result<usize, Self::Error> {
+        create_dirs(&self.root_path, &self.changes_path, &self.sync_states_path)?;
         self.cache
             .drain_clone()
             .flush_sync(
@@ -361,4 +360,27 @@ impl Persister for FsPersister {
             )
             .map_err(FsPersisterError::from)
     }
+}
+
+fn create_dirs<P1, P2, P3>(
+    root_path: P1,
+    changes_path: P2,
+    sync_states_path: P3,
+) -> Result<(), std::io::Error>
+where
+    P1: AsRef<Path>,
+    P2: AsRef<Path>,
+    P3: AsRef<Path>,
+{
+    fs::create_dir_all(&root_path)?;
+
+    if fs::metadata(&changes_path).is_err() {
+        fs::create_dir(&changes_path)?;
+    }
+
+    if fs::metadata(&sync_states_path).is_err() {
+        fs::create_dir(&sync_states_path)?;
+    }
+
+    Ok(())
 }
